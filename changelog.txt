@@ -1,1 +1,18 @@
-0.0.1 Initial commit
+0.0.1
+
+* Initial commit
+
+0.0.2
+
+* Reworked actions and especially conditions
+* Added more if conditions based on the cell's whereabouts
+* World seeds are able to survive ~6k turns in the current setup
+* Performance improvements - batching and single sprite sheet for the graphics
+
+Ideas for the next milestone:
+
+* Add the connector cell type which allows cross-organism energy flow
+
+Connector may be one way (vampire) or two-way, based on the gene
+
+* Organic and sunlight conditions

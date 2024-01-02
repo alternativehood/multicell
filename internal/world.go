@@ -51,22 +51,35 @@ type WorldExport struct {
 	cellTypes map[Position]CellType
 	energy    map[Position]int16
 	turn      int
+	organisms map[Position]string
+	genomes   map[Position]string
+}
+
+func NewWorldExport() WorldExport {
+	return WorldExport{
+		cellTypes: make(map[Position]CellType), energy: make(map[Position]int16), organisms: make(map[Position]string),
+		genomes: make(map[Position]string),
+	}
 }
 
 func (e *WorldExport) CellTypes() map[Position]CellType {
 	return e.cellTypes
 }
 
+func (e *WorldExport) Organisms() map[Position]string {
+	return e.organisms
+}
+
 func (e *WorldExport) Energy() map[Position]int16 {
 	return e.energy
 }
 
-func (e *WorldExport) Turn() int {
-	return e.turn
+func (e *WorldExport) Genomes() map[Position]string {
+	return e.genomes
 }
 
-func NewWorldExport() WorldExport {
-	return WorldExport{cellTypes: make(map[Position]CellType), energy: make(map[Position]int16)}
+func (e *WorldExport) Turn() int {
+	return e.turn
 }
 
 type World struct {
@@ -181,9 +194,11 @@ func (w *World) CreateNewCells() {
 
 func (w *World) Export() WorldExport {
 	result := NewWorldExport()
-	for cell := range w.cellPositions {
-		result.cellTypes[w.cellPositions[cell]] = cell.cellType
-		result.energy[w.cellPositions[cell]] = cell.energy
+	for cell, pos := range w.cellPositions {
+		result.cellTypes[pos] = cell.cellType
+		result.energy[pos] = cell.energy
+		result.organisms[pos] = cell.organismID
+		result.genomes[pos] = cell.genomeID
 	}
 	result.turn = w.turn
 	return result
@@ -209,6 +224,8 @@ func (w *World) GetCells() map[*Cell]Position {
 }
 
 func (w *World) SpreadEnergy() {
+	var wg sync.WaitGroup
+	start := time.Now()
 	organisms := make(map[string]*Organism)
 	for ix := range w.GetCells() {
 		if _, found := organisms[ix.organismID]; !found {
@@ -216,9 +233,12 @@ func (w *World) SpreadEnergy() {
 		}
 		organisms[ix.organismID].RegisterCell(ix)
 	}
+	wg.Add(len(organisms))
 	for i := range organisms {
-		organisms[i].HandleEnergyFlow()
+		go organisms[i].HandleEnergyFlow(w, &wg)
 	}
+	wg.Wait()
+	print(fmt.Sprintf("Elapsed time spread energy: %f\n", time.Now().Sub(start).Seconds()))
 }
 
 func (w *World) DrainOrganic(p Position) int16 {
@@ -242,7 +262,7 @@ func NewWorld(size int64) *World {
 	for i := 0; i < WorldSize; i++ {
 		for j := 0; j < WorldSize; j++ {
 			pos := NewPosition(int64(i), int64(j))
-			p := LocationProperties{sunlight: 10, organic: 5}
+			p := LocationProperties{sunlight: MaxSunLevel, organic: StartingOrganicLevel}
 			w.properties[pos] = &p
 		}
 	}

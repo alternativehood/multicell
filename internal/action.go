@@ -1,7 +1,5 @@
 package internal
 
-import "github.com/google/uuid"
-
 type Action interface {
 	Apply(cell *Cell, world *World)
 }
@@ -16,6 +14,27 @@ func NewActionDoNothing(nextGenomePosition uint8) *ActionDoNothing {
 
 func (a *ActionDoNothing) Apply(cell *Cell, world *World) {
 	cell.genomePosition = a.nextGenomePosition
+}
+
+type ActionCompareForCell struct {
+	comp                            func(c *Cell, w *World) bool
+	positionIfTrue, positionIfFalse uint8
+}
+
+func (a *ActionCompareForCell) Apply(cell *Cell, world *World) {
+	if a.comp(cell, world) {
+		cell.genomePosition = a.positionIfTrue
+	} else {
+		cell.genomePosition = a.positionIfFalse
+	}
+}
+
+func NewActionCompareForCell(
+	comp func(c *Cell, w *World) bool, positionIfTrue, positionIfFalse uint8,
+) *ActionCompareForCell {
+	return &ActionCompareForCell{
+		comp: comp, positionIfTrue: positionIfTrue, positionIfFalse: positionIfFalse,
+	}
 }
 
 func transformationEnergy(ct CellType) int16 {
@@ -41,20 +60,32 @@ type ActionChangeCellType struct {
 
 	sproutsAmount      uint8
 	nextGenomePosition uint8
+	seedFlyingTimer    int
 }
 
-func NewActionChangeCellType(target CellType, nextGenomePosition, sproutsAmount uint8) *ActionChangeCellType {
-	return &ActionChangeCellType{target: target, nextGenomePosition: nextGenomePosition, sproutsAmount: sproutsAmount}
+func NewActionChangeCellType(
+	target CellType, nextGenomePosition, sproutsAmount uint8, seedFlyingTimer int,
+) *ActionChangeCellType {
+	return &ActionChangeCellType{
+		target: target, nextGenomePosition: nextGenomePosition, sproutsAmount: sproutsAmount,
+		seedFlyingTimer: seedFlyingTimer,
+	}
 }
 
 func (a *ActionChangeCellType) Apply(cell *Cell, world *World) {
 	cell.genomePosition = a.nextGenomePosition
-	if cell.cellType == a.target || (a.target == CellTypeSeed && cell.cellType != CellTypeFlower) {
+	if cell.cellType == a.target || a.target == CellTypeSeed {
 		return
 	}
 	if cell.cellType != CellTypeSeed && cell.cellType != CellTypeSprout {
 		return
 	}
+
+	if cell.cellType == CellTypeSeed {
+		// seed can only turn into trunk
+		a.target = CellTypeTrunk
+	}
+
 	energyRequired := transformationEnergy(a.target)
 	if a.target == CellTypeTrunk {
 		energyRequired += int16(a.sproutsAmount) * SproutSpawnEnergy
@@ -65,28 +96,26 @@ func (a *ActionChangeCellType) Apply(cell *Cell, world *World) {
 	cell.cellType = a.target
 	cell.genomePosition = a.nextGenomePosition
 
-	if a.target == CellTypeSeed {
-		// flower turns into seed!
-		cell.organismID = uuid.NewString()
-		childGenome := NewGenome(world.GetGenome(cell.genomeID))
-		cell.genomeID = childGenome.id
-		cell.genomePosition = 0
-		world.RegisterNewCell(cell, world.GetPosition(cell), childGenome)
-		return
+	if a.target == CellTypeFlower {
+		cell.flowerTimer = int(FlowerSpawnEnergy)
+		cell.seedFlyingTimer = a.seedFlyingTimer
 	}
 
 	if a.target == CellTypeTrunk {
-		ns := world.GetPosition(cell).Neighbours()
 		spawned := uint8(0)
-		for ix := range ns {
+
+		for i := 0; i < int(DirectionMax); i++ {
 			if spawned == a.sproutsAmount {
 				break
 			}
 			spawned += 1
-			newSprout := NewCell(cell.genomeID, CellTypeSprout, TrunkSpawnEnergy, cell.organismID)
-			newSprout.direction = Direction(ix)
-			newSprout.genomePosition = cell.genomePosition
-			world.RegisterNewCell(newSprout, ns[ix], world.GetGenome(cell.genomeID))
+			futureGenome := world.GetGenome(cell.genomeID).Copy(world)
+			newSprout := NewCell(futureGenome.id, CellTypeSprout, TrunkSpawnEnergy, cell.organismID)
+			newSprout.direction = Direction(i)
+			newSprout.genomePosition = cell.genomePosition + uint8(i)
+			world.RegisterNewCell(
+				newSprout, world.GetPosition(cell).MovedByDirection(newSprout.direction), futureGenome,
+			)
 		}
 	}
 }
@@ -96,11 +125,11 @@ type ActionMove struct {
 }
 
 func (a *ActionMove) Apply(cell *Cell, world *World) {
+	cell.genomePosition = a.nextGenomePosition
 	if cell.cellType == CellTypeSprout {
 		return
 	}
 	world.RegisterMove(cell)
-	cell.genomePosition = a.nextGenomePosition
 }
 
 func NewActionMove(nextGenomePosition uint8) *ActionMove {

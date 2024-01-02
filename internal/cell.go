@@ -11,12 +11,14 @@ type Inventory struct {
 
 type Cell struct {
 	Inventory
-	genomeID       string
-	genomePosition uint8
-	cellType       CellType
-	direction      Direction
-	organismID     string
-	age            int16
+	genomeID        string
+	genomePosition  uint8
+	cellType        CellType
+	direction       Direction
+	organismID      string
+	age             int16
+	flowerTimer     int
+	seedFlyingTimer int
 }
 
 func (c *Cell) GetType() CellType {
@@ -28,9 +30,14 @@ func (c *Cell) ExecuteGenome(world *World, wg *sync.WaitGroup) {
 	if c.cellType != CellTypeSeed && c.cellType != CellTypeSprout {
 		return
 	}
-	genome := world.GetGenome(c.genomeID)
 	var action Action
-	action = genome.ExecutePosition(c.genomePosition, world)
+	if c.seedFlyingTimer > 0 && c.cellType == CellTypeSeed {
+		action = NewActionMove(0)
+		c.seedFlyingTimer -= 1
+	} else {
+		genome := world.GetGenome(c.genomeID)
+		action = genome.ExecutePosition(c.genomePosition, world)
+	}
 	action.Apply(c, world)
 }
 
@@ -50,21 +57,56 @@ func (c *Cell) ExecuteTypeAction(w *World, wg *sync.WaitGroup) {
 
 func (c *Cell) getSunEnergy(w *World) {
 	pos := w.cellPositions[c]
-	c.energy = min(256, w.properties[pos].sunlight+c.energy)
+	ns := pos.Neighbours()
+	for i := range ns {
+		if !w.Occupied(ns[i]) {
+			continue
+		}
+		if w.GetCellByPosition(ns[i]).cellType == CellTypeLeaf {
+			// neighbouring leaves eliminate each other
+			return
+		}
+	}
+	c.energy += w.properties[pos].sunlight
 }
 
 func (c *Cell) tryToCreateSeed(w *World) {
-	if c.energy < SeedEnergy {
+	if c.flowerTimer > 0 {
+		c.flowerTimer -= 1
 		return
 	}
-	c.energy -= SeedEnergy
-	genome := w.GetGenome(c.genomeID)
-	childGenome := NewGenome(genome)
-	child := NewCell(childGenome.id, CellTypeSeed, SeedEnergy, uuid.NewString())
-	child.direction = c.direction
-	child.genomeID = childGenome.id
-	childPos := w.cellPositions[c].MovedByDirection(c.direction)
-	w.RegisterNewCell(child, childPos, childGenome)
+	if c.energy <= FlowerSpawnEnergy {
+		return
+	}
+	pos := w.GetPosition(c)
+	direction := DirectionMax
+	possibleDirections := []Direction{DirectionWest, DirectionEast, DirectionNorth, DirectionSouth}
+	flowerDirectionFree := false
+	for i := range possibleDirections {
+		if !w.Occupied(pos.MovedByDirection(possibleDirections[i])) {
+			direction = possibleDirections[i]
+			if c.direction == direction {
+				flowerDirectionFree = true
+			}
+		}
+	}
+	if direction == DirectionMax {
+		return
+	}
+
+	if flowerDirectionFree {
+		direction = c.direction
+	}
+
+	c.flowerTimer = int(FlowerSpawnEnergy)
+	futureGenome := w.GetGenome(c.genomeID).Copy(w)
+	newSeed := NewCell(futureGenome.id, CellTypeSeed, c.energy-FlowerSpawnEnergy, uuid.NewString())
+	c.energy = FlowerSpawnEnergy
+	newSeed.direction = c.direction
+	newSeed.seedFlyingTimer = c.seedFlyingTimer
+
+	newLocation := pos.MovedByDirection(direction)
+	w.RegisterNewCell(newSeed, newLocation, futureGenome)
 }
 
 func (c *Cell) SpendEnergy(w *World) {
@@ -78,13 +120,13 @@ func (c *Cell) SpendEnergy(w *World) {
 
 func (c *Cell) Die(w *World) {
 	pos := w.cellPositions[c]
-	w.properties[pos].organic += transformationEnergy(c.cellType) / 2
+	w.properties[pos].organic += transformationEnergy(c.cellType) * rotMultiplier
 	delete(w.cellPositions, c)
 }
 
 func (c *Cell) TooOld() bool {
-	if c.cellType == CellTypeSeed || c.cellType == CellTypeSprout {
-		return false
+	if c.cellType == CellTypeSeed {
+		return c.age > MaxAge*3
 	}
 	return c.age > MaxAge
 }
@@ -100,26 +142,4 @@ func (c *Cell) getOrganicEnergy(w *World) {
 
 func NewCell(genomeID string, ct CellType, energy int16, organismID string) *Cell {
 	return &Cell{cellType: ct, genomeID: genomeID, Inventory: Inventory{energy: energy}, organismID: organismID}
-}
-
-type Organism struct {
-	cells []*Cell
-}
-
-func (o *Organism) RegisterCell(cell *Cell) {
-	o.cells = append(o.cells, cell)
-}
-
-func (o *Organism) HandleEnergyFlow() {
-	if len(o.cells) == 0 {
-		return
-	}
-	totalEnergy := int16(0)
-	for ix := range o.cells {
-		totalEnergy += o.cells[ix].energy
-	}
-	spreadEnergy := totalEnergy / int16(len(o.cells))
-	for ix := range o.cells {
-		o.cells[ix].energy = spreadEnergy
-	}
 }

@@ -6,16 +6,19 @@ import (
 	"github.com/faiface/pixel/pixelgl"
 	"github.com/faiface/pixel/text"
 	"github.com/google/uuid"
+	"golang.org/x/image/colornames"
 	"golang.org/x/image/font/basicfont"
+	"hash/fnv"
 	"image"
-	"image/color"
 	_ "image/png"
+	"math"
 	"math/rand"
 	"multicell/internal"
 	"os"
+	"time"
 )
 
-const SimulationSteps = 10000
+const SimulationSteps = 1000000
 
 func loadPicture(path string) (pixel.Picture, error) {
 	file, err := os.Open(path)
@@ -34,8 +37,8 @@ func runSimulationStep(world *internal.World) {
 	world.CleanupTurn()
 	world.ExecuteCellGenomes()
 	world.ExecuteTypeActions()
-	world.MoveCells()
 	world.CreateNewCells()
+	world.MoveCells()
 	world.SpreadEnergy()
 	world.DrainEnergy()
 	world.RemoveCells()
@@ -46,7 +49,7 @@ func runSimulation(world *internal.World, exporter chan internal.WorldExport) {
 		runSimulationStep(world)
 		exporter <- world.Export()
 
-		if len(world.GetCells()) == 0 {
+		if len(world.GetCells()) < 30 {
 			seedWorld(world)
 		}
 	}
@@ -54,26 +57,34 @@ func runSimulation(world *internal.World, exporter chan internal.WorldExport) {
 }
 
 type Resources struct {
-	flower, trunk, seed, sprout, leaf, root *pixel.Sprite
-}
+	flower, trunk, seed, sprout, leaf, root                               *pixel.Sprite
+	flowerShape, trunkShape, seedShape, sproutShape, leafShape, rootShape *pixel.Sprite
+	spritesheet                                                           pixel.Picture
 
-func loadSprite(path string) *pixel.Sprite {
-	pic, err := loadPicture(path)
-	if err != nil {
-		panic(err)
-	}
-	return pixel.NewSprite(pic, pic.Bounds())
+	framesMap map[internal.CellType]int
+	frames    []pixel.Rect
 }
 
 func loadResources() *Resources {
-	result := Resources{
-		flower: loadSprite("resources/sprites/flower.png"),
-		sprout: loadSprite("resources/sprites/sprout.png"),
-		trunk:  loadSprite("resources/sprites/trunk.png"),
-		seed:   loadSprite("resources/sprites/seed.png"),
-		leaf:   loadSprite("resources/sprites/leaf.png"),
-		root:   loadSprite("resources/sprites/root.png"),
+	result := Resources{}
+	var err error
+	result.spritesheet, err = loadPicture("resources/sprites/sheet_small.png")
+	if err != nil {
+		panic(err)
 	}
+	result.frames = make([]pixel.Rect, 0)
+	result.framesMap = make(map[internal.CellType]int)
+	for x := result.spritesheet.Bounds().Min.X; x < result.spritesheet.Bounds().Max.X; x += 32 {
+		for y := result.spritesheet.Bounds().Min.Y; y < result.spritesheet.Bounds().Max.Y; y += 32 {
+			result.frames = append(result.frames, pixel.R(x, y, x+32, y+32))
+		}
+	}
+	result.framesMap[internal.CellTypeFlower] = 0
+	result.framesMap[internal.CellTypeLeaf] = 2
+	result.framesMap[internal.CellTypeTrunk] = 4
+	result.framesMap[internal.CellTypeSeed] = 6
+	result.framesMap[internal.CellTypeSprout] = 8
+	result.framesMap[internal.CellTypeRoot] = 10
 	return &result
 }
 
@@ -84,52 +95,155 @@ func run(exporter chan internal.WorldExport) {
 		Bounds: pixel.R(0, 0, 1280, 1024),
 		VSync:  true,
 	}
-
 	win, err := pixelgl.NewWindow(cfg)
 	if err != nil {
 		panic(err)
 	}
 
-	for !win.Closed() {
-		win.Clear(color.Black)
-		worldExport, more := <-exporter
-		if more {
-			basicAtlas := text.NewAtlas(basicfont.Face7x13, text.ASCII)
-			basicTxt := text.New(pixel.V(100, 100), basicAtlas)
+	var (
+		camPos       = pixel.ZV.Add(pixel.V(400, 400))
+		camSpeed     = 500.0
+		camZoom      = 1.0
+		camZoomSpeed = 1.2
+	)
 
-			_, err = fmt.Fprintf(basicTxt, "%d\n", worldExport.Turn())
+	last := time.Now()
+	pause := true
+	oneStep := false
+	visionMode := 0
+	keySWasReleased, wasReleased := true, true
+	var worldExport internal.WorldExport
+	batch := pixel.NewBatch(&pixel.TrianglesData{}, resources.spritesheet)
+	more := true
+	for !win.Closed() {
+		if win.JustPressed(pixelgl.KeySpace) && wasReleased {
+			pause = !pause
+			wasReleased = false
+		}
+		if win.JustPressed(pixelgl.KeyS) && keySWasReleased {
+			keySWasReleased = false
+			oneStep = true
+		}
+		// TODO: at least make constants
+		if win.JustPressed(pixelgl.KeyR) {
+			// genome view
+			visionMode = 3
+		}
+		if win.JustPressed(pixelgl.KeyW) {
+			visionMode = 2
+		}
+		if win.JustPressed(pixelgl.KeyE) {
+			visionMode = 1
+		}
+		if win.JustPressed(pixelgl.KeyQ) {
+			visionMode = 0
+		}
+
+		if win.JustReleased(pixelgl.KeyS) {
+			keySWasReleased = true
+		}
+
+		if win.JustReleased(pixelgl.KeySpace) {
+			wasReleased = true
+		}
+		if (!pause || oneStep) && more {
+			oneStep = false
+			var tmpWE internal.WorldExport
+			tmpWE, more = <-exporter
+			if more {
+				worldExport = tmpWE
+			}
+		}
+
+		var cells []*pixel.Sprite
+		var matrices []pixel.Matrix
+		var colors []*pixel.RGBA
+
+		dt := time.Since(last).Seconds()
+		last = time.Now()
+
+		cam := pixel.IM.Scaled(camPos, camZoom).Moved(win.Bounds().Center().Sub(camPos))
+		win.SetMatrix(cam)
+		// TODO: common sprite handler
+		for pos := range worldExport.CellTypes() {
+			rectNum := resources.framesMap[worldExport.CellTypes()[pos]]
+			if visionMode != 0 {
+				rectNum += 1
+			}
+			rect := resources.frames[rectNum]
+			cells = append(cells, pixel.NewSprite(resources.spritesheet, rect))
+			matrices = append(
+				matrices,
+				pixel.IM.Moved(
+					pixel.V(float64(pos.X)*32, float64(pos.Y)*32),
+				),
+			)
+			var color *pixel.RGBA
+			if visionMode == 1 {
+				color = &pixel.RGBA{R: 0.5 + float64(worldExport.Energy()[pos])/float64(2*internal.MaxEnergy)}
+			} else if visionMode == 2 || visionMode == 3 {
+				source := worldExport.Organisms()[pos]
+				if visionMode == 3 {
+					source = worldExport.Genomes()[pos]
+				}
+
+				hash := fnv.New32a()
+				hash.Write([]byte(source))
+				hashValue := hash.Sum32()
+				minColorValue := 0.3
+				rgbDivider := 255 * (1.0 - minColorValue)
+				rgba := pixel.RGBA{
+					R: minColorValue + float64(hashValue&0xFF)/rgbDivider,
+					G: minColorValue + float64((hashValue>>8)&0xFF)/rgbDivider,
+					B: minColorValue + float64((hashValue>>16)&0xFF)/rgbDivider,
+					A: 255,
+				}
+				color = &rgba
+			}
+			colors = append(colors, color)
+		}
+
+		if win.Pressed(pixelgl.KeyLeft) {
+			camPos.X -= camSpeed * dt
+		}
+		if win.Pressed(pixelgl.KeyRight) {
+			camPos.X += camSpeed * dt
+		}
+		if win.Pressed(pixelgl.KeyDown) {
+			camPos.Y -= camSpeed * dt
+		}
+		if win.Pressed(pixelgl.KeyUp) {
+			camPos.Y += camSpeed * dt
+		}
+		camZoom *= math.Pow(camZoomSpeed, win.MouseScroll().Y)
+
+		batch.Clear()
+		win.Clear(colornames.Black)
+		for i, cell := range cells {
+			if colors[i] == nil {
+				cell.Draw(batch, matrices[i])
+			} else {
+				cell.DrawColorMask(batch, matrices[i], colors[i])
+			}
+		}
+		batch.Draw(win)
+		basicAtlas := text.NewAtlas(basicfont.Face7x13, text.ASCII)
+		basicTxt := text.New(camPos.Add(pixel.V(-300, -300)), basicAtlas)
+
+		_, err = fmt.Fprintf(basicTxt, "%d\n", worldExport.Turn())
+		if err != nil {
+			panic(err)
+		}
+
+		basicTxt.Draw(win, pixel.IM.Scaled(basicTxt.Orig, 4))
+		if pause {
+			basicTxt = text.New(camPos.Add(pixel.V(-0, -300)), basicAtlas)
+
+			_, err = fmt.Fprintf(basicTxt, "PAUSED\n")
 			if err != nil {
 				panic(err)
 			}
-			basicTxt.Draw(win, pixel.IM)
-			for pos, _ := range worldExport.CellTypes() {
-				var sprite *pixel.Sprite
-				switch worldExport.CellTypes()[pos] {
-				case internal.CellTypeFlower:
-					sprite = resources.flower
-				case internal.CellTypeSprout:
-					sprite = resources.sprout
-				case internal.CellTypeTrunk:
-					sprite = resources.trunk
-				case internal.CellTypeSeed:
-					sprite = resources.seed
-				case internal.CellTypeLeaf:
-					sprite = resources.leaf
-				case internal.CellTypeRoot:
-					sprite = resources.root
-				}
-				if sprite == nil {
-					panic(fmt.Errorf("the sprite was empty"))
-				}
-				sprite.DrawColorMask(win, pixel.IM.Moved(win.Bounds().Min.Add(
-					pixel.V(50.0, -50.0),
-				).Add(pixel.V(float64(pos.X)*32, float64(pos.Y)*32))).Scaled(
-					pixel.V(0.0, 0.0), 0.5),
-					color.RGBA{R: uint8(127 + 127*worldExport.Energy()[pos]/internal.MaxEnergy)},
-				)
-			}
-		} else {
-			return
+			basicTxt.Draw(win, pixel.IM.Scaled(basicTxt.Orig, 4))
 		}
 
 		win.Update()
@@ -140,7 +254,7 @@ func seedWorld(w *internal.World) {
 	for i := 0; i < internal.WorldSize; i++ {
 		for j := 0; j < internal.WorldSize; j++ {
 			pos := internal.NewPosition(int64(i), int64(j))
-			if rand.Float32() > 0.1 {
+			if rand.Float32() > 0.03 {
 				continue
 			}
 			parentGenome := internal.NewGenome(nil)
@@ -149,6 +263,8 @@ func seedWorld(w *internal.World) {
 				pos,
 				internal.NewCell(parentGenome.GetID(), internal.CellTypeSeed, 255, uuid.NewString()),
 			)
+
+			//return
 		}
 	}
 }
