@@ -64,7 +64,8 @@ func (g *Genome) executeIf(position uint8) Action {
 		// to allow for goto statement at least
 		positionIfFalse := position + 5
 		comp := func(c *Cell, w *World) bool {
-			return less && c.energy < value || !less && c.energy >= value
+			cellValue := c.GetFromInventory(ItemTypeEnergy)
+			return less && cellValue < value || !less && cellValue >= value
 		}
 		return NewActionCompareForCell(comp, positionIfTrue, positionIfFalse)
 	case CompareCellType:
@@ -168,11 +169,12 @@ func NewGenome(parentGenome *Genome) *Genome {
 	}
 
 	changes := false
-	g.genome = parentGenome.genome
 	for i := range g.genome {
 		if rand.Float32() < MutationChance {
 			g.genome[i] = uint8(rand.Uint32())
 			changes = true
+		} else {
+			g.genome[i] = parentGenome.genome[i]
 		}
 	}
 	if changes {

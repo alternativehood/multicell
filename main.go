@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"fmt"
 	"github.com/faiface/pixel"
 	"github.com/faiface/pixel/pixelgl"
@@ -14,14 +15,16 @@ import (
 	"math"
 	"math/rand"
 	"multicell/internal"
-	"os"
 	"time"
 )
 
 const SimulationSteps = 1000000
 
+//go:embed resources/*
+var resources embed.FS
+
 func loadPicture(path string) (pixel.Picture, error) {
-	file, err := os.Open(path)
+	file, err := resources.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -38,28 +41,38 @@ func runSimulationStep(world *internal.World) {
 	world.ExecuteCellGenomes()
 	world.ExecuteTypeActions()
 	world.CreateNewCells()
-	world.MoveCells()
 	world.SpreadEnergy()
-	world.DrainEnergy()
+	world.DrainResources()
+	world.MoveCells()
 	world.RemoveCells()
 }
 
 func runSimulation(world *internal.World, exporter chan internal.WorldExport) {
+	noProgressCounter := 0
 	for i := 0; i < SimulationSteps; i++ {
 		runSimulationStep(world)
 		exporter <- world.Export()
 
-		if len(world.GetCells()) < 30 {
-			seedWorld(world)
+		canProgress := false
+		for c := range world.GetCells() {
+			if c.GetType() == internal.CellTypeSprout || c.GetType() == internal.CellTypeFlower {
+				canProgress = true
+			}
 		}
+		if !canProgress {
+			noProgressCounter += 1
+		}
+		if noProgressCounter >= 200 {
+			seedWorld(world)
+			noProgressCounter = 0
+		}
+
 	}
 	close(exporter)
 }
 
 type Resources struct {
-	flower, trunk, seed, sprout, leaf, root                               *pixel.Sprite
-	flowerShape, trunkShape, seedShape, sproutShape, leafShape, rootShape *pixel.Sprite
-	spritesheet                                                           pixel.Picture
+	spritesheet pixel.Picture
 
 	framesMap map[internal.CellType]int
 	frames    []pixel.Rect
@@ -85,6 +98,7 @@ func loadResources() *Resources {
 	result.framesMap[internal.CellTypeSeed] = 6
 	result.framesMap[internal.CellTypeSprout] = 8
 	result.framesMap[internal.CellTypeRoot] = 10
+	result.framesMap[internal.CellTypeConnector] = 12
 	return &result
 }
 
@@ -125,6 +139,10 @@ func run(exporter chan internal.WorldExport) {
 			oneStep = true
 		}
 		// TODO: at least make constants
+		if win.JustPressed(pixelgl.KeyT) {
+			// genome view
+			visionMode = 4
+		}
 		if win.JustPressed(pixelgl.KeyR) {
 			// genome view
 			visionMode = 3
@@ -180,7 +198,7 @@ func run(exporter chan internal.WorldExport) {
 			)
 			var color *pixel.RGBA
 			if visionMode == 1 {
-				color = &pixel.RGBA{R: 0.5 + float64(worldExport.Energy()[pos])/float64(2*internal.MaxEnergy)}
+				color = &pixel.RGBA{R: 0.1 + 0.9*float64(worldExport.Energy()[pos])/float64(internal.MaxEnergy)}
 			} else if visionMode == 2 || visionMode == 3 {
 				source := worldExport.Organisms()[pos]
 				if visionMode == 3 {
@@ -199,6 +217,8 @@ func run(exporter chan internal.WorldExport) {
 					A: 255,
 				}
 				color = &rgba
+			} else if visionMode == 4 {
+				color = &pixel.RGBA{B: 0.1 + 0.9*float64(worldExport.Water()[pos])/float64(internal.WaterMaxAmount)}
 			}
 			colors = append(colors, color)
 		}
@@ -261,7 +281,12 @@ func seedWorld(w *internal.World) {
 			w.AddGenome(parentGenome)
 			w.AddCell(
 				pos,
-				internal.NewCell(parentGenome.GetID(), internal.CellTypeSeed, 255, uuid.NewString()),
+				internal.NewCell(
+					parentGenome.GetID(), internal.CellTypeSeed,
+					internal.Inventory{internal.ItemTypeWater: internal.WaterMaxAmount,
+						internal.ItemTypeEnergy: internal.MaxEnergy},
+					uuid.NewString(),
+				),
 			)
 
 			//return

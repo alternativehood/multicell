@@ -3,22 +3,28 @@ package internal
 const (
 	WorldSize = 100
 
-	MaxEnergy          = int16(1024)
-	EnergyTax          = int16(2)
-	TrunkSpawnEnergy   = int16(10)
-	FlowerSpawnEnergy  = int16(50)
-	LeafSpawnEnergy    = int16(8)
-	RootSpawnEnergy    = int16(8)
-	SeedSpawnEnergy    = int16(15)
-	SproutSpawnEnergy  = int16(5)
-	OrganicDrainByCell = int16(2)
-	rotMultiplier      = 4
-	MaxAge             = 1000
+	MaxEnergy            = int16(1024)
+	EnergyTax            = int16(2)
+	TrunkSpawnEnergy     = int16(10)
+	FlowerSpawnEnergy    = int16(20)
+	LeafSpawnEnergy      = int16(8)
+	RootSpawnEnergy      = int16(8)
+	ConnectorSpawnEnergy = int16(20)
+	SeedSpawnEnergy      = int16(200)
+	SproutSpawnEnergy    = int16(5)
+	OrganicDrainByCell   = int16(2)
+	rotMultiplier        = 4
+	MaxAge               = 10000
 
-	StartingOrganicLevel  = 100
+	WaterExtractionValue   = 10
+	WaterRegenerationValue = 1
+	WaterTransferAmount    = 20
+	WaterMaxAmount         = 400
+
+	StartingOrganicLevel  = 1000
 	MaxSunLevel           = 20
 	MaxSeedFlyingDistance = 20
-	EnergyTransferAmount  = 10
+	EnergyTransferAmount  = 20
 )
 
 type Direction uint8
@@ -42,8 +48,13 @@ const (
 	CellTypeSeed
 	CellTypeSprout
 	CellTypeRoot
+	CellTypeConnector
 	MaxCellType
 )
+
+func CanMove(cellType CellType) bool {
+	return cellType == CellTypeSeed
+}
 
 type ConditionType uint8
 

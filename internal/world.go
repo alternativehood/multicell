@@ -42,23 +42,18 @@ func (p Position) MovedByDirection(direction Direction) Position {
 	return NewPosition(x, y)
 }
 
-type LocationProperties struct {
-	sunlight int16
-	organic  int16
-}
-
 type WorldExport struct {
-	cellTypes map[Position]CellType
-	energy    map[Position]int16
-	turn      int
-	organisms map[Position]string
-	genomes   map[Position]string
+	cellTypes     map[Position]CellType
+	energy, water map[Position]int16
+	turn          int
+	organisms     map[Position]string
+	genomes       map[Position]string
 }
 
 func NewWorldExport() WorldExport {
 	return WorldExport{
 		cellTypes: make(map[Position]CellType), energy: make(map[Position]int16), organisms: make(map[Position]string),
-		genomes: make(map[Position]string),
+		genomes: make(map[Position]string), water: make(map[Position]int16),
 	}
 }
 
@@ -82,19 +77,38 @@ func (e *WorldExport) Turn() int {
 	return e.turn
 }
 
+func (e *WorldExport) Water() map[Position]int16 {
+	return e.water
+}
+
 type World struct {
 	GenomeStorage
-	properties    map[Position]*LocationProperties
 	cellPositions map[*Cell]Position
 	size          int64
 
 	moveAttempts []*Cell
 	newCells     map[*Cell]Position
 
-	newCellsMx sync.Mutex
-	movesMx    sync.Mutex
-	organisms  map[string][]string
-	turn       int
+	newCellsMx  sync.Mutex
+	movesMx     sync.Mutex
+	inventoryMx sync.Mutex
+	organisms   map[string][]string
+	turn        int
+	inventory   map[Position]Inventory
+}
+
+func (w *World) DrainSquare(pos Position, itemType ItemType, valuePerPos int16) int16 {
+	w.inventoryMx.Lock()
+	defer w.inventoryMx.Unlock()
+	ns := pos.Neighbours()
+	allPositions := append(ns, pos)
+	totalGot := int16(0)
+	for i := range allPositions {
+		extraction := min(w.inventory[allPositions[i]][itemType], valuePerPos)
+		totalGot += extraction
+		w.inventory[allPositions[i]][itemType] -= extraction
+	}
+	return totalGot
 }
 
 func (w *World) GetCellByPosition(pos Position) *Cell {
@@ -119,8 +133,8 @@ func (w *World) Occupied(pos Position) bool {
 	return false
 }
 
-func (w *World) GetProperties(pos Position) *LocationProperties {
-	return w.properties[pos]
+func (w *World) GetInventory(pos Position) Inventory {
+	return w.inventory[pos]
 }
 
 func (w *World) RegisterMove(c *Cell) {
@@ -134,6 +148,11 @@ func (w *World) CleanupTurn() {
 	w.newCells = make(map[*Cell]Position)
 	w.newGenomes = make(map[string]*Genome)
 	w.turn += 1
+	for pos := range w.inventory {
+		w.inventory[pos][ItemTypeWater] = min(
+			WaterMaxAmount, w.inventory[pos][ItemTypeWater]+WaterRegenerationValue,
+		)
+	}
 }
 
 func (w *World) GetPosition(c *Cell) Position {
@@ -175,8 +194,13 @@ func (w *World) MoveCells() {
 		currentPosition := w.cellPositions[cell]
 		newPosition := currentPosition.MovedByDirection(cell.direction)
 		if w.Occupied(newPosition) {
+			present := w.GetCellByPosition(newPosition)
+			if cell.cellType == CellTypeSeed && present.cellType != CellTypeTrunk && present.cellType != CellTypeSeed {
+				present.AddToInventory(ItemTypeEnergy, -SeedSpawnEnergy)
+			}
 			continue
 		}
+
 		w.cellPositions[cell] = newPosition
 	}
 }
@@ -196,9 +220,10 @@ func (w *World) Export() WorldExport {
 	result := NewWorldExport()
 	for cell, pos := range w.cellPositions {
 		result.cellTypes[pos] = cell.cellType
-		result.energy[pos] = cell.energy
+		result.energy[pos] = cell.inventory[ItemTypeEnergy]
 		result.organisms[pos] = cell.organismID
 		result.genomes[pos] = cell.genomeID
+		result.water[pos] = cell.inventory[ItemTypeWater]
 	}
 	result.turn = w.turn
 	return result
@@ -207,15 +232,16 @@ func (w *World) Export() WorldExport {
 func (w *World) RemoveCells() {
 	for cell := range w.cellPositions {
 		cell.age += 1
-		if cell.energy <= 0 || cell.TooOld() {
+		if cell.inventory[ItemTypeEnergy] <= 0 || cell.TooOld() || cell.inventory[ItemTypeWater] <= 0 {
 			cell.Die(w)
 		}
 	}
 }
 
-func (w *World) DrainEnergy() {
+func (w *World) DrainResources() {
 	for cell := range w.cellPositions {
 		cell.SpendEnergy(w)
+		cell.SpendWater(w)
 	}
 }
 
@@ -235,35 +261,26 @@ func (w *World) SpreadEnergy() {
 	}
 	wg.Add(len(organisms))
 	for i := range organisms {
-		go organisms[i].HandleEnergyFlow(w, &wg)
+		go organisms[i].HandleResourcesFlow(w, &wg)
 	}
 	wg.Wait()
 	print(fmt.Sprintf("Elapsed time spread energy: %f\n", time.Now().Sub(start).Seconds()))
 }
 
-func (w *World) DrainOrganic(p Position) int16 {
-	ns := p.Neighbours()
-	allPositions := append(ns, p)
-	totalGot := int16(0)
-	for i := range allPositions {
-		extraction := min(w.GetProperties(allPositions[i]).organic, OrganicDrainByCell)
-		totalGot += extraction
-		w.properties[allPositions[i]].organic -= extraction
-	}
-	return totalGot
-}
-
 func NewWorld(size int64) *World {
 	w := World{
-		size: size, properties: make(map[Position]*LocationProperties), cellPositions: make(map[*Cell]Position),
-		moveAttempts: make([]*Cell, 0), newCells: make(map[*Cell]Position),
+		size: size, cellPositions: make(map[*Cell]Position),
+		moveAttempts: make([]*Cell, 0), newCells: make(map[*Cell]Position), inventory: make(map[Position]Inventory),
 		GenomeStorage: NewGenomeStorage(),
 	}
 	for i := 0; i < WorldSize; i++ {
 		for j := 0; j < WorldSize; j++ {
 			pos := NewPosition(int64(i), int64(j))
-			p := LocationProperties{sunlight: MaxSunLevel, organic: StartingOrganicLevel}
-			w.properties[pos] = &p
+			w.inventory[pos] = Inventory{
+				ItemTypeWater:   WaterMaxAmount,
+				ItemTypeOrganic: StartingOrganicLevel,
+				ItemTypeEnergy:  MaxSunLevel,
+			}
 		}
 	}
 	return &w

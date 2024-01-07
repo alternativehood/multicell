@@ -13,6 +13,8 @@ Ideas for the next milestone:
 
 * Add the connector cell type which allows cross-organism energy flow
 
-Connector may be one way (vampire) or two-way, based on the gene
+Connector may be one way (vampire) or two-way, based on the gene. FIX CONNECTORS!
 
 * Organic and sunlight conditions
+
+* Add water and it's spread as a factor instead of age

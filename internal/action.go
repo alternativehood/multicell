@@ -47,6 +47,8 @@ func transformationEnergy(ct CellType) int16 {
 		return LeafSpawnEnergy
 	case CellTypeRoot:
 		return RootSpawnEnergy
+	case CellTypeConnector:
+		return ConnectorSpawnEnergy
 	case CellTypeSeed:
 		return SeedSpawnEnergy
 	case CellTypeSprout:
@@ -110,7 +112,11 @@ func (a *ActionChangeCellType) Apply(cell *Cell, world *World) {
 			}
 			spawned += 1
 			futureGenome := world.GetGenome(cell.genomeID).Copy(world)
-			newSprout := NewCell(futureGenome.id, CellTypeSprout, TrunkSpawnEnergy, cell.organismID)
+			// water comes out of nowhere here
+			newSprout := NewCell(
+				futureGenome.id, CellTypeSprout,
+				Inventory{ItemTypeEnergy: TrunkSpawnEnergy, ItemTypeWater: WaterTransferAmount}, cell.organismID,
+			)
 			newSprout.direction = Direction(i)
 			newSprout.genomePosition = cell.genomePosition + uint8(i)
 			world.RegisterNewCell(
