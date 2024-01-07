@@ -3,12 +3,6 @@ package main
 import (
 	"embed"
 	"fmt"
-	"github.com/faiface/pixel"
-	"github.com/faiface/pixel/pixelgl"
-	"github.com/faiface/pixel/text"
-	"github.com/google/uuid"
-	"golang.org/x/image/colornames"
-	"golang.org/x/image/font/basicfont"
 	"hash/fnv"
 	"image"
 	_ "image/png"
@@ -16,6 +10,13 @@ import (
 	"math/rand"
 	"multicell/internal"
 	"time"
+
+	"github.com/faiface/pixel"
+	"github.com/faiface/pixel/pixelgl"
+	"github.com/faiface/pixel/text"
+	"github.com/google/uuid"
+	"golang.org/x/image/colornames"
+	"golang.org/x/image/font/basicfont"
 )
 
 const SimulationSteps = 1000000

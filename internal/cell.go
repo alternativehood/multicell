@@ -1,8 +1,9 @@
 package internal
 
 import (
-	"github.com/google/uuid"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 type ItemType int

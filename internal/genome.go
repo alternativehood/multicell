@@ -1,9 +1,10 @@
 package internal
 
 import (
-	"github.com/google/uuid"
 	"math/rand"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 type Genome struct {
